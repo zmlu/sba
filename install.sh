@@ -32,4 +32,4 @@ NODE_NAME='[$COUNTRY] $VPS_ORG'
 EOF
 
 # gen config
-bash <(wget -qO- https://raw.githubusercontent.com/zmlu/sba/main/sba.sh?_=$(date +%s)) -f config.conf
+bash <(wget -qO- https://raw.githubusercontent.com/zmlu/sba/main/sba.sh?_=$(date +%s)) -f /root/config.conf
