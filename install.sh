@@ -21,12 +21,15 @@ echo "ARGO_DOMAIN: $ARGO_DOMAIN"
 echo "ARGO_AUTH: $ARGO_AUTH"
 echo "[$COUNTRY] $VPS_ORG"
 
+cat <<EOF > "config.conf"
+L='C'
+SERVER_IP='$SERVER_IP'
+ARGO_DOMAIN='$ARGO_DOMAIN'
+ARGO_AUTH='$ARGO_AUTH'
+SERVER='skk.moe'
+UUID='$PASSWORD'
+NODE_NAME='[$COUNTRY] $VPS_ORG'
+EOF
+
 # gen config
-bash <(wget -qO- https://raw.githubusercontent.com/zmlu/sba/main/sba.sh?_=$(date +%s)) \
-  --L C \
-  --SERVER_IP $SERVER_IP \
-  --SERVER skk.moe \
-  --UUID $PASSWORD \
-  --ARGO_DOMAIN=$ARGO_DOMAIN \
-  --ARGO_AUTH="$ARGO_AUTH" \
-  --NODE_NAME="[$COUNTRY] $VPS_ORG"
+bash <(wget -qO- https://raw.githubusercontent.com/zmlu/sba/main/sba.sh?_=$(date +%s)) -f config.conf
