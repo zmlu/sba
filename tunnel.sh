@@ -27,14 +27,10 @@ DOMAIN_NAME="$3"
 SERVICE_URL="${4:-http://localhost:3010}"
 
 # 从 DOMAIN_NAME 提取 TUNNEL_NAME (前缀) 和根域名
-# 统计点号数量来判断是否有子域名
 DOT_COUNT=$(echo "$DOMAIN_NAME" | grep -o "\." | wc -l)
 
 if [ "$DOT_COUNT" -lt 2 ]; then
-    echo "✗ 错误: DOMAIN_NAME 必须包含子域名（至少需要 2 个点号）"
-    echo "  当前输入: $DOMAIN_NAME (包含 $DOT_COUNT 个点号)"
-    echo "  正确示例: app.example.com, api.banmiya.org"
-    echo "  错误示例: example.com, banmiya.org (仅根域名)"
+    echo "✗ 错误: DOMAIN_NAME 必须包含子域名"
     exit 1
 fi
 
