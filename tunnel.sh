@@ -1,26 +1,45 @@
 #!/bin/bash
 
 # Cloudflare Tunnel 管理脚本
-# 用法: ./script.sh <ZONE_ID> <ACCOUNT_ID> <CLOUDFLARE_API_TOKEN> <TUNNEL_NAME> <DOMAIN_NAME> <SERVICE_URL>
+# 用法: ./script.sh <ACCOUNT_ID> <CLOUDFLARE_API_TOKEN> <DOMAIN_NAME> [SERVICE_URL]
 
 set -e
 
 # 检查参数
-if [ $# -lt 5 ] || [ $# -gt 6 ]; then
-    echo "用法: $0 <ZONE_ID> <ACCOUNT_ID> <CLOUDFLARE_API_TOKEN> <TUNNEL_NAME> <DOMAIN_NAME> [SERVICE_URL]"
+if [ $# -lt 3 ] || [ $# -gt 4 ]; then
+    echo "用法: $0 <ACCOUNT_ID> <CLOUDFLARE_API_TOKEN> <DOMAIN_NAME> [SERVICE_URL]"
     echo ""
     echo "参数说明:"
+    echo "  ACCOUNT_ID: Cloudflare 账户 ID"
+    echo "  CLOUDFLARE_API_TOKEN: Cloudflare API Token"
+    echo "  DOMAIN_NAME: 完整域名，例如 app.example.com"
     echo "  SERVICE_URL: 可选，默认为 http://localhost:3010"
-    echo "  示例: https://localhost:8080 或 http://192.168.1.100:3000"
+    echo ""
+    echo "示例:"
+    echo "  $0 abc123 your_token app.example.com"
+    echo "  $0 abc123 your_token app.example.com https://localhost:8080"
     exit 1
 fi
 
-ZONE_ID="$1"
-ACCOUNT_ID="$2"
-CLOUDFLARE_API_TOKEN="$3"
-TUNNEL_NAME="$4"
-DOMAIN_NAME="$5"
-SERVICE_URL="${6:-http://localhost:3010}"
+ACCOUNT_ID="$1"
+CLOUDFLARE_API_TOKEN="$2"
+DOMAIN_NAME="$3"
+SERVICE_URL="${4:-http://localhost:3010}"
+
+# 从 DOMAIN_NAME 提取 TUNNEL_NAME (前缀) 和根域名
+# 统计点号数量来判断是否有子域名
+DOT_COUNT=$(echo "$DOMAIN_NAME" | grep -o "\." | wc -l)
+
+if [ "$DOT_COUNT" -lt 2 ]; then
+    echo "✗ 错误: DOMAIN_NAME 必须包含子域名（至少需要 2 个点号）"
+    echo "  当前输入: $DOMAIN_NAME (包含 $DOT_COUNT 个点号)"
+    echo "  正确示例: app.example.com, api.banmiya.org"
+    echo "  错误示例: example.com, banmiya.org (仅根域名)"
+    exit 1
+fi
+
+TUNNEL_NAME=$(echo "$DOMAIN_NAME" | cut -d'.' -f1)
+ROOT_DOMAIN=$(echo "$DOMAIN_NAME" | cut -d'.' -f2-)
 
 API_BASE="https://api.cloudflare.com/client/v4"
 AUTH_HEADER="Authorization: Bearer $CLOUDFLARE_API_TOKEN"
@@ -28,14 +47,31 @@ AUTH_HEADER="Authorization: Bearer $CLOUDFLARE_API_TOKEN"
 echo "=========================================="
 echo "Cloudflare Tunnel 配置脚本"
 echo "=========================================="
-echo "Zone ID: $ZONE_ID"
 echo "Account ID: $ACCOUNT_ID"
-echo "Tunnel Name: $TUNNEL_NAME"
-echo "Domain: $DOMAIN_NAME"
+echo "域名: $DOMAIN_NAME"
+echo "Tunnel 名称: $TUNNEL_NAME"
+echo "根域名: $ROOT_DOMAIN"
 echo "Service URL: $SERVICE_URL"
 echo "=========================================="
 
-apt install -y jq
+# 步骤 0: 获取 Zone ID
+echo ""
+echo "[步骤 0] 获取 Zone ID..."
+
+ZONE_RESPONSE=$(curl -s -X GET \
+    "${API_BASE}/zones?name=${ROOT_DOMAIN}" \
+    -H "$AUTH_HEADER" \
+    -H "Content-Type: application/json")
+
+ZONE_ID=$(echo "$ZONE_RESPONSE" | jq -r '.result[0].id')
+
+if [ -z "$ZONE_ID" ] || [ "$ZONE_ID" = "null" ]; then
+    echo "✗ 无法找到域名 ${ROOT_DOMAIN} 对应的 Zone"
+    echo "响应: $(echo "$ZONE_RESPONSE" | jq -r '.errors')"
+    exit 1
+fi
+
+echo "✓ Zone ID 获取成功: $ZONE_ID"
 
 # 步骤 1: 查询并处理现有 Tunnel
 echo ""
@@ -51,16 +87,16 @@ EXISTING_TUNNEL_IDS=$(echo "$TUNNEL_LIST" | jq -r ".result[] | select(.name == \
 
 if [ -n "$EXISTING_TUNNEL_IDS" ]; then
     echo "发现 $(echo "$EXISTING_TUNNEL_IDS" | wc -l) 个同名 Tunnel，正在逐一删除..."
-
+    
     while IFS= read -r TUNNEL_ID_TO_DELETE; do
         if [ -n "$TUNNEL_ID_TO_DELETE" ] && [ "$TUNNEL_ID_TO_DELETE" != "null" ]; then
             echo "  正在删除 Tunnel ID: $TUNNEL_ID_TO_DELETE"
-
+            
             DELETE_RESPONSE=$(curl -s -X DELETE \
                 "${API_BASE}/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID_TO_DELETE}" \
                 -H "$AUTH_HEADER" \
                 -H "Content-Type: application/json")
-
+            
             DELETE_SUCCESS=$(echo "$DELETE_RESPONSE" | jq -r '.success')
             if [ "$DELETE_SUCCESS" = "true" ]; then
                 echo "  ✓ 已删除 Tunnel: $TUNNEL_ID_TO_DELETE"
@@ -70,7 +106,7 @@ if [ -n "$EXISTING_TUNNEL_IDS" ]; then
             fi
         fi
     done <<< "$EXISTING_TUNNEL_IDS"
-
+    
     echo "✓ 所有同名 Tunnel 已处理完成"
 else
     echo "未找到现有 Tunnel"
@@ -120,7 +156,7 @@ CONFIG_RESPONSE=$(curl -s -X PUT \
             \"ingress\": [
                 {
                     \"service\": \"${SERVICE_URL}\",
-                    \"hostname\": \"${TUNNEL_NAME}.${DOMAIN_NAME}\",
+                    \"hostname\": \"${DOMAIN_NAME}\",
                     \"originRequest\": {
                         \"noTLSVerify\": true
                     }
@@ -147,16 +183,15 @@ echo "✓ Tunnel 配置成功"
 echo ""
 echo "[步骤 3] 管理 DNS 记录..."
 
-FULL_DOMAIN="${TUNNEL_NAME}.${DOMAIN_NAME}"
 DNS_LIST=$(curl -s -X GET \
-    "${API_BASE}/zones/${ZONE_ID}/dns_records?type=CNAME&name=${FULL_DOMAIN}" \
+    "${API_BASE}/zones/${ZONE_ID}/dns_records?type=CNAME&name=${DOMAIN_NAME}" \
     -H "$AUTH_HEADER" \
     -H "Content-Type: application/json")
 
-EXISTING_DNS_ID=$(echo "$DNS_LIST" | jq -r ".result[] | select(.name == \"$FULL_DOMAIN\") | .id" | head -n 1)
+EXISTING_DNS_ID=$(echo "$DNS_LIST" | jq -r ".result[] | select(.name == \"$DOMAIN_NAME\") | .id" | head -n 1)
 
 DNS_PAYLOAD="{
-    \"name\": \"${FULL_DOMAIN}\",
+    \"name\": \"${DOMAIN_NAME}\",
     \"type\": \"CNAME\",
     \"content\": \"${TUNNEL_ID}.cfargotunnel.com\",
     \"proxied\": true,
@@ -167,35 +202,35 @@ DNS_PAYLOAD="{
 
 if [ -n "$EXISTING_DNS_ID" ] && [ "$EXISTING_DNS_ID" != "null" ]; then
     echo "发现现有 DNS 记录 (ID: $EXISTING_DNS_ID)，正在更新..."
-
+    
     DNS_RESPONSE=$(curl -s -X PATCH \
         "${API_BASE}/zones/${ZONE_ID}/dns_records/${EXISTING_DNS_ID}" \
         -H "$AUTH_HEADER" \
         -H "Content-Type: application/json" \
         -d "$DNS_PAYLOAD")
-
+    
     DNS_SUCCESS=$(echo "$DNS_RESPONSE" | jq -r '.success')
     if [ "$DNS_SUCCESS" != "true" ]; then
         echo "✗ 更新 DNS 记录失败: $(echo "$DNS_RESPONSE" | jq -r '.errors')"
         exit 1
     fi
-
+    
     echo "✓ DNS 记录更新成功"
 else
     echo "未找到现有 DNS 记录，正在创建..."
-
+    
     DNS_RESPONSE=$(curl -s -X POST \
         "${API_BASE}/zones/${ZONE_ID}/dns_records" \
         -H "$AUTH_HEADER" \
         -H "Content-Type: application/json" \
         -d "$DNS_PAYLOAD")
-
+    
     DNS_SUCCESS=$(echo "$DNS_RESPONSE" | jq -r '.success')
     if [ "$DNS_SUCCESS" != "true" ]; then
         echo "✗ 创建 DNS 记录失败: $(echo "$DNS_RESPONSE" | jq -r '.errors')"
         exit 1
     fi
-
+    
     echo "✓ DNS 记录创建成功"
 fi
 
@@ -204,8 +239,10 @@ echo ""
 echo "=========================================="
 echo "✓ 所有操作完成!"
 echo "=========================================="
+echo "Zone ID: $ZONE_ID"
 echo "Tunnel ID: $TUNNEL_ID"
-echo "Tunnel 域名: ${FULL_DOMAIN}"
+echo "Tunnel 名称: $TUNNEL_NAME"
+echo "Tunnel 域名: ${DOMAIN_NAME}"
 echo "Tunnel Target: ${TUNNEL_ID}.cfargotunnel.com"
 echo "Service: $SERVICE_URL"
 echo "=========================================="
