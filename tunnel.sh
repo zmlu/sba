@@ -50,6 +50,8 @@ echo "根域名: $ROOT_DOMAIN"
 echo "Service URL: $SERVICE_URL"
 echo "=========================================="
 
+apt install -y jq
+
 # 步骤 0: 获取 Zone ID
 echo ""
 echo "[步骤 0] 获取 Zone ID..."
