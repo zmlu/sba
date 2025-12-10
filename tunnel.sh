@@ -35,6 +35,8 @@ echo "Domain: $DOMAIN_NAME"
 echo "Service URL: $SERVICE_URL"
 echo "=========================================="
 
+apt install -y jq
+
 # 步骤 1: 查询并处理现有 Tunnel
 echo ""
 echo "[步骤 1] 查询现有 Tunnel..."
