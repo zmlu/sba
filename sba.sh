@@ -810,7 +810,7 @@ install_sba() {
   done
 
   if [[ -n "${ARGO_JSON}" && -n "${ARGO_DOMAIN}" ]]; then
-    echo "[debug] if"
+  echo "[debug] if"
     ARGO_RUNS="$WORK_DIR/cloudflared tunnel --edge-ip-version auto --config $WORK_DIR/tunnel.yml run"
     json_argo
   elif [[ -n "${ARGO_TOKEN}" && -n "${ARGO_DOMAIN}" ]]; then
