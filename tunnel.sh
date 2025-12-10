@@ -10,7 +10,7 @@ if [ $# -lt 5 ] || [ $# -gt 6 ]; then
     echo "用法: $0 <ZONE_ID> <ACCOUNT_ID> <CLOUDFLARE_API_TOKEN> <TUNNEL_NAME> <DOMAIN_NAME> [SERVICE_URL]"
     echo ""
     echo "参数说明:"
-    echo "  SERVICE_URL: 可选，默认为 https://localhost:3010"
+    echo "  SERVICE_URL: 可选，默认为 http://localhost:3010"
     echo "  示例: https://localhost:8080 或 http://192.168.1.100:3000"
     exit 1
 fi
@@ -20,7 +20,7 @@ ACCOUNT_ID="$2"
 CLOUDFLARE_API_TOKEN="$3"
 TUNNEL_NAME="$4"
 DOMAIN_NAME="$5"
-SERVICE_URL="${6:-https://localhost:3010}"
+SERVICE_URL="${6:-http://localhost:3010}"
 
 API_BASE="https://api.cloudflare.com/client/v4"
 AUTH_HEADER="Authorization: Bearer $CLOUDFLARE_API_TOKEN"
