@@ -1,13 +1,17 @@
 #!/bin/bash
 
 # Cloudflare Tunnel 管理脚本
-# 用法: ./script.sh <ZONE_ID> <ACCOUNT_ID> <CLOUDFLARE_API_TOKEN> <TUNNEL_NAME> <DOMAIN_NAME>
+# 用法: ./script.sh <ZONE_ID> <ACCOUNT_ID> <CLOUDFLARE_API_TOKEN> <TUNNEL_NAME> <DOMAIN_NAME> <SERVICE_URL>
 
 set -e
 
 # 检查参数
-if [ $# -ne 5 ]; then
-    echo "用法: $0 <ZONE_ID> <ACCOUNT_ID> <CLOUDFLARE_API_TOKEN> <TUNNEL_NAME> <DOMAIN_NAME>"
+if [ $# -lt 5 ] || [ $# -gt 6 ]; then
+    echo "用法: $0 <ZONE_ID> <ACCOUNT_ID> <CLOUDFLARE_API_TOKEN> <TUNNEL_NAME> <DOMAIN_NAME> [SERVICE_URL]"
+    echo ""
+    echo "参数说明:"
+    echo "  SERVICE_URL: 可选，默认为 https://localhost:3010"
+    echo "  示例: https://localhost:8080 或 http://192.168.1.100:3000"
     exit 1
 fi
 
@@ -16,6 +20,7 @@ ACCOUNT_ID="$2"
 CLOUDFLARE_API_TOKEN="$3"
 TUNNEL_NAME="$4"
 DOMAIN_NAME="$5"
+SERVICE_URL="${6:-https://localhost:3010}"
 
 API_BASE="https://api.cloudflare.com/client/v4"
 AUTH_HEADER="Authorization: Bearer $CLOUDFLARE_API_TOKEN"
@@ -27,6 +32,7 @@ echo "Zone ID: $ZONE_ID"
 echo "Account ID: $ACCOUNT_ID"
 echo "Tunnel Name: $TUNNEL_NAME"
 echo "Domain: $DOMAIN_NAME"
+echo "Service URL: $SERVICE_URL"
 echo "=========================================="
 
 # 步骤 1: 查询并处理现有 Tunnel
@@ -111,7 +117,7 @@ CONFIG_RESPONSE=$(curl -s -X PUT \
         \"config\": {
             \"ingress\": [
                 {
-                    \"service\": \"https://localhost:3010\",
+                    \"service\": \"${SERVICE_URL}\",
                     \"hostname\": \"${TUNNEL_NAME}.${DOMAIN_NAME}\",
                     \"originRequest\": {
                         \"noTLSVerify\": true
@@ -199,5 +205,6 @@ echo "=========================================="
 echo "Tunnel ID: $TUNNEL_ID"
 echo "Tunnel 域名: ${FULL_DOMAIN}"
 echo "Tunnel Token: $TUNNEL_TOKEN"
-echo "Tunnel Json: {\"AccountTag\":\"$ACCOUNT_ID\",\"TunnelSecret\":\"$TUNNEL_SECRET\",\"TunnelID\":\"$TUNNEL_ID\",\"Endpoint\":\"\"}"
+echo "Target: ${TUNNEL_ID}.cfargotunnel.com"
+echo "Service: $SERVICE_URL"
 echo "=========================================="
