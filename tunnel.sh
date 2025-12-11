@@ -2,7 +2,23 @@
 
 # Cloudflare Tunnel 管理脚本
 # 用法: ./script.sh <ACCOUNT_ID> <CLOUDFLARE_API_TOKEN> <DOMAIN_NAME> [SERVICE_URL]
-
+#
+# API Token 最小权限要求:
+# 1. Account - Cloudflare Tunnel:Edit
+# 2. Zone - DNS:Edit
+# 3. Zone - Zone:Read
+#
+# 创建 API Token 步骤:
+# 1. 访问 https://dash.cloudflare.com/profile/api-tokens
+# 2. 点击 "Create Token"
+# 3. 选择 "Create Custom Token"
+# 4. 添加以下权限:
+#    - Account > Cloudflare Tunnel > Edit
+#    - Zone > DNS > Edit
+#    - Zone > Zone > Read
+# 5. Account Resources: Include-所需账户
+# 6. Zone Resources: Include-特定Zone-所需Zone
+#
 set -e
 
 # 检查参数
