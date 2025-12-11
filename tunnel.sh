@@ -16,8 +16,8 @@
 #    - Account > Cloudflare Tunnel > Edit
 #    - Zone > DNS > Edit
 #    - Zone > Zone > Read
-# 5. Account Resources: Include-所需账户
-# 6. Zone Resources: Include-特定Zone-所需Zone
+# 5. Account Resources: Include > 所需账户
+# 6. Zone Resources: Include > 特定Zone > 所需Zone
 #
 set -e
 
