@@ -48,6 +48,10 @@ if [ "$DOT_COUNT" -lt 2 ]; then
     exit 1
 fi
 
+apt install -y jq
+
+clear
+
 TUNNEL_NAME=$(echo "$DOMAIN_NAME" | cut -d'.' -f1)
 ROOT_DOMAIN=$(echo "$DOMAIN_NAME" | cut -d'.' -f2-)
 
