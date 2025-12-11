@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Cloudflare Tunnel 管理脚本
-# 用法: ./tunnel.sh <ACCOUNT_ID> <CLOUDFLARE_API_TOKEN> <DOMAIN_NAME> [SERVICE_URL]
+# 用法: ./tunnel.sh <CLOUDFLARE_API_TOKEN> <DOMAIN_NAME> [SERVICE_URL]
 #
 # API Token 最小权限要求:
 # 1. Account - Cloudflare Tunnel:Edit
