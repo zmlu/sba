@@ -28,7 +28,7 @@ if [ $# -lt 2 ] || [ $# -gt 3 ]; then
     echo "参数说明:"
     echo "  CLOUDFLARE_API_TOKEN: Cloudflare API Token"
     echo "  DOMAIN_NAME: 完整域名，例如 app.example.com（必须包含子域名）"
-    echo "  SERVICE_URL: 可选，默认为 https://localhost:3010"
+    echo "  SERVICE_URL: 可选，默认为 http://localhost:3010"
     echo ""
     echo "示例:"
     echo "  $0 your_token app.example.com"
@@ -38,7 +38,7 @@ fi
 
 CLOUDFLARE_API_TOKEN="$1"
 DOMAIN_NAME="$2"
-SERVICE_URL="${3:-https://localhost:3010}"
+SERVICE_URL="${3:-http://localhost:3010}"
 
 # 从 DOMAIN_NAME 提取 TUNNEL_NAME (前缀) 和根域名
 DOT_COUNT=$(echo "$DOMAIN_NAME" | grep -o "\." | wc -l)
