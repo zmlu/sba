@@ -21,7 +21,33 @@
 #
 set -e
 
-# 检查参数
+# 验证 32位 Hex 字符串 (Zone ID, Account ID)
+validate_hex32() {
+    if [[ ! "$1" =~ ^[a-f0-9]{32}$ ]]; then
+        echo "✗ 错误: ID 格式校验失败 ($1)，应为 32 位 Hex 字符串。"
+        exit 1
+    fi
+}
+
+# 验证 UUID (Tunnel ID)
+validate_uuid() {
+    if [[ ! "$1" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]]; then
+        echo "✗ 错误: Tunnel ID 格式校验失败 ($1)，应为 UUID 格式。"
+        exit 1
+    fi
+}
+
+# JSON 提取 用法: echo "$JSON" | get_json_value "key"
+get_json_value() {
+    local key=$1
+    # 1. grep -o 匹配 "key": 后面的内容，直到遇到逗号或右大括号 (不假设值有引号)
+    # 2. head -n 1 取第一个匹配项
+    # 3. cut 取冒号后的值部分
+    # 4. sed 去除可能存在的首尾空白和双引号 (支持 "value", true, 123 等)
+    grep -o "\"$key\":[^,}]*" | head -n 1 | cut -d':' -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/^"//;s/"$//'
+}
+
+# 参数检查与初始化
 if [ $# -lt 2 ] || [ $# -gt 3 ]; then
     echo "用法: $0 <CLOUDFLARE_API_TOKEN> <DOMAIN_NAME> [SERVICE_URL]"
     echo ""
@@ -32,7 +58,7 @@ if [ $# -lt 2 ] || [ $# -gt 3 ]; then
     echo ""
     echo "示例:"
     echo "  $0 your_token app.example.com"
-    echo "  $0 your_token app.example.com https://localhost:8080"
+    echo "  $0 your_token app.example.com https://localhost:8443"
     exit 1
 fi
 
@@ -40,23 +66,27 @@ CLOUDFLARE_API_TOKEN="$1"
 DOMAIN_NAME="$2"
 SERVICE_URL="${3:-http://localhost:3010}"
 
-# 从 DOMAIN_NAME 提取 TUNNEL_NAME (前缀) 和根域名
-DOT_COUNT=$(echo "$DOMAIN_NAME" | grep -o "\." | wc -l)
+# 检查必要依赖
+for cmd in wget openssl grep sed awk; do
+    if ! command -v $cmd &> /dev/null; then
+        echo "✗ 错误: 未找到命令 '$cmd'，请先安装。"
+        exit 1
+    fi
+done
 
+# 提取域名信息
+DOT_COUNT=$(echo "$DOMAIN_NAME" | grep -o "\." | wc -l)
 if [ "$DOT_COUNT" -lt 2 ]; then
-    echo "✗ 错误: DOMAIN_NAME 必须包含子域名"
+    echo "✗ 错误: DOMAIN_NAME ($DOMAIN_NAME) 必须包含子域名 (例如: app.example.com)"
     exit 1
 fi
-
-apt install -y jq
-
-clear
 
 TUNNEL_NAME=$(echo "$DOMAIN_NAME" | cut -d'.' -f1)
 ROOT_DOMAIN=$(echo "$DOMAIN_NAME" | cut -d'.' -f2-)
 
 API_BASE="https://api.cloudflare.com/client/v4"
-AUTH_HEADER="Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+# wget header
+WGET_ARGS=(--no-check-certificate -qO- --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" --header "Content-Type: application/json")
 
 echo "=========================================="
 echo "Cloudflare Tunnel 配置脚本"
@@ -68,193 +98,181 @@ echo "推导出根域名: $ROOT_DOMAIN"
 echo "Service URL: $SERVICE_URL"
 echo "=========================================="
 
-# 步骤 0: 获取 Zone ID 和 Account ID
+# 步骤 1: 获取 Zone ID 和 Account ID
 echo ""
-echo "[步骤 0] 获取 Zone ID 和 Account ID..."
+echo "[步骤 1] 获取 Zone ID 和 Account ID..."
 
-ZONE_RESPONSE=$(curl -s -X GET \
-    "${API_BASE}/zones?name=${ROOT_DOMAIN}" \
-    -H "$AUTH_HEADER" \
-    -H "Content-Type: application/json")
+ZONE_RESPONSE=$(wget "${WGET_ARGS[@]}" "${API_BASE}/zones?name=${ROOT_DOMAIN}")
 
-ZONE_ID=$(echo "$ZONE_RESPONSE" | jq -r '.result[0].id')
-ACCOUNT_ID=$(echo "$ZONE_RESPONSE" | jq -r '.result[0].account.id')
+# 提取 Zone ID
+ZONE_ID=$(echo "$ZONE_RESPONSE" | grep -o '"id":"[a-f0-9]\{32\}"' | head -n 1 | cut -d'"' -f4)
 
-if [ -z "$ZONE_ID" ] || [ "$ZONE_ID" = "null" ]; then
-    echo "✗ 无法找到域名 ${ROOT_DOMAIN} 对应的 Zone"
-    echo "响应: $(echo "$ZONE_RESPONSE" | jq -r '.errors')"
+# 提取 Account ID
+ACCOUNT_ID=$(echo "$ZONE_RESPONSE" | sed -n 's/.*"account":{"id":"\([a-f0-9]\{32\}\)".*/\1/p' | head -n 1)
+
+if [ -z "$ZONE_ID" ]; then
+    echo "✗ 无法获取 Zone ID，请检查域名是否正确或 Token 权限 (Zone:Read)。"
     exit 1
 fi
 
-if [ -z "$ACCOUNT_ID" ] || [ "$ACCOUNT_ID" = "null" ]; then
-    echo "✗ 无法从 Zone 信息中获取 Account ID"
-    echo "响应: $(echo "$ZONE_RESPONSE" | jq -r '.result[0]')"
+if [ -z "$ACCOUNT_ID" ]; then
+    echo "✗ 无法获取 Account ID，请检查 Token 权限。"
     exit 1
 fi
+
+validate_hex32 "$ZONE_ID"
+validate_hex32 "$ACCOUNT_ID"
 
 echo "✓ Zone ID: $ZONE_ID"
 echo "✓ Account ID: $ACCOUNT_ID"
 
-# 步骤 1: 查询并处理现有 Tunnel
+# 步骤 2: 查询并处理现有 Tunnel
 echo ""
-echo "[步骤 1] 查询现有 Tunnel..."
+echo "[步骤 2] 检查现有 Tunnel..."
 
-TUNNEL_LIST=$(curl -s -X GET \
-    "${API_BASE}/accounts/${ACCOUNT_ID}/cfd_tunnel" \
-    -H "$AUTH_HEADER" \
-    -H "Content-Type: application/json")
+# 查询未删除的同名隧道
+TUNNEL_LIST=$(wget "${WGET_ARGS[@]}" "${API_BASE}/accounts/${ACCOUNT_ID}/cfd_tunnel?name=${TUNNEL_NAME}&is_deleted=false")
 
-# 检查是否存在同名 Tunnel（可能有多个）
-EXISTING_TUNNEL_IDS=$(echo "$TUNNEL_LIST" | jq -r ".result[] | select(.name == \"$TUNNEL_NAME\") | .id")
+# 尝试提取现有 ID
+EXISTING_TUNNEL_ID=$(echo "$TUNNEL_LIST" | grep -o '"id":"[a-f0-9]\{8\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{12\}"' | head -n 1 | cut -d'"' -f4)
 
-if [ -n "$EXISTING_TUNNEL_IDS" ]; then
-    echo "发现 $(echo "$EXISTING_TUNNEL_IDS" | wc -l) 个同名 Tunnel，正在逐一删除..."
+TUNNEL_ID=""
+TUNNEL_TOKEN=""
+TUNNEL_SECRET=""
 
-    while IFS= read -r TUNNEL_ID_TO_DELETE; do
-        if [ -n "$TUNNEL_ID_TO_DELETE" ] && [ "$TUNNEL_ID_TO_DELETE" != "null" ]; then
-            echo "  正在删除 Tunnel ID: $TUNNEL_ID_TO_DELETE"
+if [ -n "$EXISTING_TUNNEL_ID" ]; then
+    validate_uuid "$EXISTING_TUNNEL_ID"
+    echo "✓ 发现现有隧道，准备复用。"
+    TUNNEL_ID="$EXISTING_TUNNEL_ID"
+    echo "✓ Tunnel ID: $TUNNEL_ID"
 
-            DELETE_RESPONSE=$(curl -s -X DELETE \
-                "${API_BASE}/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID_TO_DELETE}" \
-                -H "$AUTH_HEADER" \
-                -H "Content-Type: application/json")
+    # 获取 Tunnel Token (复用时需要单独获取 Token)
+    TOKEN_RESPONSE=$(wget "${WGET_ARGS[@]}" "${API_BASE}/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/token")
+    TUNNEL_TOKEN=$(echo "$TOKEN_RESPONSE" | get_json_value "result")
 
-            DELETE_SUCCESS=$(echo "$DELETE_RESPONSE" | jq -r '.success')
-            if [ "$DELETE_SUCCESS" = "true" ]; then
-                echo "  ✓ 已删除 Tunnel: $TUNNEL_ID_TO_DELETE"
-            else
-                echo "  ✗ 删除 Tunnel 失败: $(echo "$DELETE_RESPONSE" | jq -r '.errors')"
-                # 继续删除其他 Tunnel，不退出
-            fi
-        fi
-    done <<< "$EXISTING_TUNNEL_IDS"
+    if [ -z "$TUNNEL_TOKEN" ]; then
+         echo "✗ 错误: 无法获取 Tunnel Token"
+         exit 1
+    fi
 
-    echo "✓ 所有同名 Tunnel 已处理完成"
+    echo "✓ Tunnel Token: $TUNNEL_TOKEN"
+
+    # 从 Token 中解析 Secret (base64 decode) Token 结构: {"a":"account_tag","t":"tunnel_id","s":"tunnel_secret"}
+    # 优先使用 base64 命令，如果不存在则尝试 openssl
+    if command -v base64 &> /dev/null; then
+        TOKEN_DECODED=$(echo "$TUNNEL_TOKEN" | base64 -d 2>/dev/null)
+    else
+        TOKEN_DECODED=$(echo "$TUNNEL_TOKEN" | openssl enc -d -base64 -A 2>/dev/null)
+    fi
+
+    # 提取 "s" (TunnelSecret)
+    TUNNEL_SECRET=$(echo "$TOKEN_DECODED" | get_json_value "s")
+
+    if [ -n "$TUNNEL_SECRET" ]; then
+        echo "✓ Tunnel Secret: $TUNNEL_SECRET"
+    fi
+
 else
-    echo "未找到现有 Tunnel"
+    echo "未发现现有活跃隧道，正在创建新隧道..."
+
+    # 生成 32 字节随机 Secret 并 Base64 编码
+    TUNNEL_SECRET=$(openssl rand -base64 32)
+    CREATE_PAYLOAD="{\"name\":\"$TUNNEL_NAME\",\"config_src\":\"cloudflare\",\"tunnel_secret\":\"$TUNNEL_SECRET\"}"
+    CREATE_RESPONSE=$(wget "${WGET_ARGS[@]}" --method=POST --body-data="$CREATE_PAYLOAD" "${API_BASE}/accounts/${ACCOUNT_ID}/cfd_tunnel")
+    IS_SUCCESS=$(echo "$CREATE_RESPONSE" | get_json_value "success")
+    if [ "$IS_SUCCESS" != "true" ]; then
+        echo "✗ 创建 Tunnel 失败。"
+        echo "响应: $CREATE_RESPONSE"
+        exit 1
+    fi
+
+    TUNNEL_ID=$(echo "$CREATE_RESPONSE" | get_json_value "id")
+    TUNNEL_TOKEN=$(echo "$CREATE_RESPONSE" | get_json_value "token")
+
+    validate_uuid "$TUNNEL_ID"
+    echo "✓ 新隧道创建成功。"
+    echo "✓ Tunnel ID: $TUNNEL_ID"
+    echo "✓ Tunnel Token: $TUNNEL_TOKEN"
+    echo "✓ Tunnel Secret: $TUNNEL_SECRET"
 fi
 
-# 生成 Tunnel Secret (至少 32 字节的 base64 编码)
+# ==========================================
+# 步骤 3: 配置 Tunnel (Ingress Rules)
+# ==========================================
 echo ""
-echo "正在生成 Tunnel Secret..."
-TUNNEL_SECRET=$(openssl rand -base64 32)
-echo "✓ Tunnel Secret 已生成"
+echo "[步骤 3] 配置 Tunnel ingress 规则..."
 
-# 创建新 Tunnel
-echo ""
-echo "正在创建新 Tunnel..."
-
-CREATE_RESPONSE=$(curl -s -X POST \
-    "${API_BASE}/accounts/${ACCOUNT_ID}/cfd_tunnel" \
-    -H "$AUTH_HEADER" \
-    -H "Content-Type: application/json" \
-    -d "{
-        \"name\": \"$TUNNEL_NAME\",
-        \"config_src\": \"cloudflare\",
-        \"tunnel_secret\": \"$TUNNEL_SECRET\"
-    }")
-
-CREATE_SUCCESS=$(echo "$CREATE_RESPONSE" | jq -r '.success')
-if [ "$CREATE_SUCCESS" != "true" ]; then
-    echo "✗ 创建 Tunnel 失败: $(echo "$CREATE_RESPONSE" | jq -r '.errors')"
-    exit 1
+# 检查是否需要 HTTPS 配置
+TLS_CONFIG=""
+if [[ "$SERVICE_URL" == https* ]]; then
+    echo "  检测到 HTTPS 服务，添加 noTLSVerify 配置..."
+    TLS_CONFIG=',"originRequest":{"noTLSVerify":true}'
 fi
 
-TUNNEL_ID=$(echo "$CREATE_RESPONSE" | jq -r '.result.id')
-TUNNEL_TOKEN=$(echo "$CREATE_RESPONSE" | jq -r '.result.token')
-echo "✓ Tunnel 创建成功"
-echo "  Tunnel ID: $TUNNEL_ID"
-
-# 步骤 2: 配置 Tunnel
-echo ""
-echo "[步骤 2] 配置 Tunnel ingress 规则..."
-
-CONFIG_RESPONSE=$(curl -s -X PUT \
-    "${API_BASE}/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" \
-    -H "$AUTH_HEADER" \
-    -H "Content-Type: application/json" \
-    -d "{
-        \"config\": {
-            \"ingress\": [
-                {
-                    \"service\": \"${SERVICE_URL}\",
-                    \"hostname\": \"${DOMAIN_NAME}\",
-                    \"originRequest\": {
-                        \"noTLSVerify\": true
-                    }
-                },
-                {
-                    \"service\": \"http_status:404\"
-                }
-            ],
-            \"warp-routing\": {
-                \"enabled\": false
+# 手动构造复杂的 JSON 配置文件
+# 注意：Shell 变量拼接 JSON 需要非常小心引号
+CONFIG_PAYLOAD="{
+    \"config\": {
+        \"ingress\": [
+            {
+                \"service\": \"$SERVICE_URL\",
+                \"hostname\": \"$DOMAIN_NAME\"${TLS_CONFIG}
+            },
+            {
+                \"service\": \"http_status:404\"
             }
+        ],
+        \"warp-routing\": {
+            \"enabled\": false
         }
-    }")
-
-CONFIG_SUCCESS=$(echo "$CONFIG_RESPONSE" | jq -r '.success')
-if [ "$CONFIG_SUCCESS" != "true" ]; then
-    echo "✗ 配置 Tunnel 失败: $(echo "$CONFIG_RESPONSE" | jq -r '.errors')"
-    exit 1
-fi
-
-echo "✓ Tunnel 配置成功"
-
-# 步骤 3: 管理 DNS 记录
-echo ""
-echo "[步骤 3] 管理 DNS 记录..."
-
-DNS_LIST=$(curl -s -X GET \
-    "${API_BASE}/zones/${ZONE_ID}/dns_records?type=CNAME&name=${DOMAIN_NAME}" \
-    -H "$AUTH_HEADER" \
-    -H "Content-Type: application/json")
-
-EXISTING_DNS_ID=$(echo "$DNS_LIST" | jq -r ".result[] | select(.name == \"$DOMAIN_NAME\") | .id" | head -n 1)
-
-DNS_PAYLOAD="{
-    \"name\": \"${DOMAIN_NAME}\",
-    \"type\": \"CNAME\",
-    \"content\": \"${TUNNEL_ID}.cfargotunnel.com\",
-    \"proxied\": true,
-    \"settings\": {
-        \"flatten_cname\": false
     }
 }"
 
-if [ -n "$EXISTING_DNS_ID" ] && [ "$EXISTING_DNS_ID" != "null" ]; then
+CONFIG_RESPONSE=$(wget "${WGET_ARGS[@]}" --method=PUT --body-data="$CONFIG_PAYLOAD" "${API_BASE}/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations")
+
+CONFIG_SUCCESS=$(echo "$CONFIG_RESPONSE" | get_json_value "success")
+
+if [ "$CONFIG_SUCCESS" != "true" ]; then
+    echo "✗ 配置 Tunnel 失败。"
+    echo "响应: $CONFIG_RESPONSE"
+    exit 1
+fi
+
+echo "✓ Tunnel 配置已更新: $SERVICE_URL -> $DOMAIN_NAME"
+
+# ==========================================
+# 步骤 4: 管理 DNS 记录
+# ==========================================
+echo ""
+echo "[步骤 4] 管理 DNS 记录..."
+
+# 查询现有 DNS 记录
+DNS_LIST=$(wget "${WGET_ARGS[@]}" "${API_BASE}/zones/${ZONE_ID}/dns_records?type=CNAME&name=${DOMAIN_NAME}")
+
+EXISTING_DNS_ID=$(echo "$DNS_LIST" | grep -o '"id":"[a-f0-9]\{32\}"' | head -n 1 | cut -d'"' -f4)
+
+CNAME_TARGET="${TUNNEL_ID}.cfargotunnel.com"
+DNS_PAYLOAD="{\"name\":\"${DOMAIN_NAME}\",\"type\":\"CNAME\",\"content\":\"${CNAME_TARGET}\",\"proxied\":true,\"settings\":{\"flatten_cname\":false}}"
+
+if [ -n "$EXISTING_DNS_ID" ]; then
+    validate_hex32 "$EXISTING_DNS_ID"
     echo "发现现有 DNS 记录 (ID: $EXISTING_DNS_ID)，正在更新..."
 
-    DNS_RESPONSE=$(curl -s -X PATCH \
-        "${API_BASE}/zones/${ZONE_ID}/dns_records/${EXISTING_DNS_ID}" \
-        -H "$AUTH_HEADER" \
-        -H "Content-Type: application/json" \
-        -d "$DNS_PAYLOAD")
-
-    DNS_SUCCESS=$(echo "$DNS_RESPONSE" | jq -r '.success')
-    if [ "$DNS_SUCCESS" != "true" ]; then
-        echo "✗ 更新 DNS 记录失败: $(echo "$DNS_RESPONSE" | jq -r '.errors')"
-        exit 1
-    fi
-
-    echo "✓ DNS 记录更新成功"
+    DNS_RESPONSE=$(wget "${WGET_ARGS[@]}" --method=PATCH --body-data="$DNS_PAYLOAD" "${API_BASE}/zones/${ZONE_ID}/dns_records/${EXISTING_DNS_ID}")
 else
     echo "未找到现有 DNS 记录，正在创建..."
 
-    DNS_RESPONSE=$(curl -s -X POST \
-        "${API_BASE}/zones/${ZONE_ID}/dns_records" \
-        -H "$AUTH_HEADER" \
-        -H "Content-Type: application/json" \
-        -d "$DNS_PAYLOAD")
-
-    DNS_SUCCESS=$(echo "$DNS_RESPONSE" | jq -r '.success')
-    if [ "$DNS_SUCCESS" != "true" ]; then
-        echo "✗ 创建 DNS 记录失败: $(echo "$DNS_RESPONSE" | jq -r '.errors')"
-        exit 1
-    fi
-
-    echo "✓ DNS 记录创建成功"
+    DNS_RESPONSE=$(wget "${WGET_ARGS[@]}" --method=POST --body-data="$DNS_PAYLOAD" "${API_BASE}/zones/${ZONE_ID}/dns_records")
 fi
+
+DNS_SUCCESS=$(echo "$DNS_RESPONSE" | get_json_value "success")
+
+if [ "$DNS_SUCCESS" != "true" ]; then
+    echo "✗ 创建 DNS 记录失败: $DNS_RESPONSE"
+    exit 1
+fi
+
+echo "✓ DNS 记录创建成功"
 
 # 完成
 echo ""
